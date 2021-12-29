@@ -1,4 +1,4 @@
-    P.S. What is the best way to make array-set hybrid? I.e. array, where order of elements matters, but it also supports accelerated "in" operation with minimal memory cost.
+>    P.S. What is the best way to make array-set hybrid? I.e. array, where order of elements matters, but it also supports accelerated "in" operation with minimal memory cost.
 
 Any sorted structure needs to have roughly the primitives for the IN operator to find the insertion point of an item. So usually they will have something.
 
@@ -10,4 +10,4 @@ Because most iterations were for loops, I changed to an iterator to hide the int
 
 Later I generalized this with generics, so I could also use non-string types as keys, and some time later again I added for..in iterators. I still use it for some of my larger datastructures.  I mostly either use TDictionary (a hash) or this.
 
-@marcov at https://forum.lazarus.freepascal.org/index.php/topic,57616.msg429043.html#msg429043
+marcov at https://forum.lazarus.freepascal.org/index.php/topic,57616.msg429043.html#msg429043
