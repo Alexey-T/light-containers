@@ -1,0 +1,152 @@
+Lightcontainers
+
+History. 
+=======
+
+The origin of the lightcontainer concept is the moment that at a company I worked for, it was decided to stuff the entire database in memory to do queries against it.
+The queries typically touched ALL data, or very high percentage, think calculating statistics; OLAP with a fixed entity model. I was reluctant to do that 
+because it meant throwing out every used database and -aware component and handcoding everything and the obvious lack of scaling in the then 32-bit only Delphi 
+environment. But in retrospect it turned out to be the right decision. The data was naturally partitioned in to geographical areas, and the memory scaling 
+issues could have been easily handled by rearranging over multiple machines over the logical partitions and combining results of multiple machines was easy. 
+Though I only realized that in retrospect, or at least at the very end of the job.
+
+We were using a commercial set of DBF database components, and working from memory this sped up the process by several magnitudes. (I guestimate from 30 minutes  
+runtime per query originally, to a few seconds in the end, with the /loading/ being the limiting factor.
+
+Besides speedy and somewhat scalable container types, memory footprint was important too. In the original statistic calculating program (not by me) the
+DBFs were partially loaded into memory for quick lookup using a binary tree based type from the Java STL-like Decal package for indexing. 
+These had a lot of overhead, and the indexes had a larger footprint then the normalized actual data. I think the Decal type was introduced 
+as a quickfix  when the number of entries increase because of the (sorted=true) tstringlist had horrible insertion performance even for the 
+partial data, but I'm not sure about the exact details anymore. The decal introduction was before my time.  Afaik the original code didn't even load
+the biggest entity, but looked it up in the dbf.
+
+That was all pre-generics STL imitation in Delphi (6), so variant was the only polymorphic type. So Decal tried to emulate generics by using variants and interfaces 
+a lot. Decal however scaled better for ordered insertion, but had huge fixed overhead (both in used memory and performance)
+
+The biggest entity had a small set of references (50% containing two, over 40% containing one reference), but since historical items 
+weren't deleted, it could be as much as 15). The entity was a log kind of record, so basically a datestamp and a couple of integers, and 
+thus the separate allocation of the set (originally a tlist) and its heap overhead actually were the single biggest memory use that could be
+eliminated.
+
+For this purpose the highly specialized TlightSet was developed, which used the bits that are always zero in a pointer allocated via getmem (due to the
+granularity of the heapmanager, typically a small power of two like 8 or 16) to signal special cases. One pointer was encoded by one
+value, the others were used to mask the true count of pointers in the allocation. Crude, ugly and overspecialistic, but very effective, and in retrospect
+kept us from breaking up the system in parts (in the end we used 1.6GB of memory, with 2GB a practical limit for 32-bit Delphi then).
+Having gotten permission to open source it (to ask questions mostly), I kept it mainly to look back to but I never reused it again till the generics version.
+
+The original application was mostly used for report generation, and only for part of the data at a time. A runtime of 20 minutes plus on
+partial data was not uncommon. Running on complete data was not even realistic. One of the requirements of the new 
+situation was reporting over the full set of data in real time for a webfrontend, which meant that the main indexes had to change. Worse,
+the user could click together his own query, creating many hard to avoid worst case scenarios. So we needed more pregenerated indexes.
+
+The Decal type was both too memory hungry (a node in the tree was iirc a tcomponent with a variant as field that held an interface) and 
+its lookup performance was worse than TStringlist. After dabbling a bit with Judy trees,
+and reading up on the more practical aspects of implementing containers(*), I decided to hack something up myself, and that became
+lightmap. I also needed to read up on everything Delphi had beyond FPC v1, since this was my first Delphi job as a professional.
+
+Abstractly, it was a map (mapping integers or strings to pointers/tobjects), with quick lookup and memory requirements. An additional, 
+third requirement (basis of the click your own query) was fast in-order walking. That required List capabilities and ruled out pure maps like hashes, unless combined
+with an additional tree, which meant you had two datastructures for one index, hitting the memory requirement again. There was
+some other minor use of the in order property too, some dialogs showed data from records just before and after the record that was being edited/reviewed.
+
+So it was decided to take the base principles of tstringlist but optimize ordered insertion by having basically an (dynamical) array of 
+arrays. So if the deeper array containing elements had reached its maximal limit (typically 1024), an additional array was inserted in 
+the primary array.
+
+I didn't trust the dynamic arrays entirely at the time, performance wise, so I used manual allocation. (FPC v1 didn't have them, and while they had just been 
+added to trunk, what would become v2 two years later), they were still unstable at the moment of lightcontainers inception. I worked on it both in FPC and Delphi,
+because while I needed it in Delphi, I was very curious after the effects of the newly added FPC inline directive.
+
+The decal code was iterator based, and we didn't need the random access based on index value aspect of tstringlist, so we kept 
+the iterator aspect. It also would hide the fact that internally the data was partitioned over multiple arrays well.  
+We made iterator a record though, so that all state would be local and optimizable. (we knew both FPC was working on inline, and while
+we were using D6architect at work, I myself had bought D2005 in my time there, which had inline, but to my big regret not cross-unit)
+
+I got permission from my employer to open the source under FPC's RTL license (mostly because I had gotten much help on forums, and they wanted to see the 
+result), so I always kept the source. 
+
+
+(*) Strangely, the classes I had in calculating SQL query performance by expressing every operation as a constant times its cardinality 
+(accounting for indexes) were more useful here than my classes about abstract data types. Scaling more than 10 times what we had was
+extremely doubtful for business reasons. (64-bit was about to happen, so technically it could be done, FPC started on x86_64 during this 
+period). The datastructure classes were too much geared towards "infinite" cardinality because then the order of the algorithm nearly 
+always wins out. The SQL query method of assessing cost of a whole data operation using linear estimation (fixed costs + cost per item) gave a better way to predict scaling by a magnitude 
+10 or 20.
+
+Generics
+=======
+
+Then generics happened, but all generics in D2009 seem to assume classes OR a fixed base type as elements. There seemed to be no truely
+generic container that could take either a value type or a class, without wrapping it in a class first (internally or externally),
+and ordered types are even rarer. (in retrospect I probably read over the fact that TPair is a record, not being used to records-with-methods back then?)
+
+So I decided to give it a try, starting with -MAP. The initial version was more of a gadget, since the generics versions in D2009 and XE were a bit too unstable.
+It got better starting with XE3. The same with FPC, it works fine with FPC 3.0. Generics relieve a lot of the memory management issues.  
+
+I don't remember why I didn't go for a "Pair" based collection like generics.collections. Maybe because I avoided looking at Delphi 
+sources too closely because of my FPC involvement, or because of bugs in the early delphi versions (which was often trial-and-error to avoid internal errors), or maybe
+I totally overlooked the fact that TPair was and could be a record.
+
+Another likely reason is the iterator mechanism which is fairly optimal for just iterating keys and values, but less for both. Quite often the value contains the 
+key in some form and it is not needed.  Unfortunately that makes for..in enumerator support for both key and value a bit less optimal (copying to a pair).
+
+In 2015 a good new use case emerged, a duplicate file finder kit that I mostly used to clean up harddisks of decommissioned machines. It used collections a lot, and some
+had integer/int64 as key.  A lot of debugging was done, and during 2014/2015 FPC came up to speed with Delphi, generics wise. The last problem in FPC generics was 
+partial specialization, and slowly IEs are getting more rare than in XE3. (good work Sven!).  A bug still remains (not being able to use numeric constants in the implementation,
+having to move them to the interface, but it turned out that Delphi also only solves that for the simple cases.
+
+I added enumerator support for FOR..IN in december 2015, (turned out to be easy, iterator principle is the same, lightcontainer's takes after Java, Delphi is .NET, but the .NET and Java
+ones are probably related too, coming full circle). The default iterator is values though, not keys.
+
+The enumerators are still relatively untested, I need a real demonstration, rather than the old lightgentest.
+
+I don't exactly know where TLightMap stands compared to a TDictionary. I think it is slower in lookups but faster in buildup, and it is ordered, while TDictionary is not. In-order collections
+are easier to debug in my opinion.
+
+In 2016 BBasile made a website that allowed a parametrised benchmarking of various container types, see http://forum.lazarus-ide.org/index.php/topic,34348.msg225877.html#msg225877
+In 2017 I made genarr by stripping the values from tlightmap for this thread: http://forum.lazarus-ide.org/index.php/topic,36084.msg240284.html
+
+Lightcontainers was added later, so not included in his conclusions. (turn tstringlist and lightcontainers on) For most lookups it is mediocre in speed, but best except for TStringlist in memory 
+efficiency. TStringlist while slightly better in both speed and memory at lower key counts breaks down at higher key counts though (measurably starting with 10000 items, 
+catastrophically at 200000+ items)
+
+It shows quite nicely that lightcontainers tried to balance speed vs memory. It will never be the same as a true hash, specially with large key sizes, because it does more compares.
+
+Unfortunately creating the datastructure (insertion) and other properties like iteration are not benchmarked. Fast buildup was an original design goal of lightcontainer too, because most streaming
+was kept in order, and in order building an ordered datastructure is much faster.
+
+
+String Heap
+==========
+
+During the experiments of the last few years (2012-2016), it turned out loading is still fairly slow (loading 200k-400k objects/s). I think the main culprit is that streaming is 
+a method that executes per object and calls several load routines, combined with string handling. Encoding support in Delphi didn't exactly improve this.
+
+Since 99.99% of the strings that are loaded are saved again, string heap is the result of an experiment in loading a low number of sets of related entities with as large 
+read/write operations as possible, and without much additional call and stringoperation overhead. I'm currently engineering for a specific problem, hoping to 
+generalize it as much as possible later. 
+
+Problems to solve:
+- (stringheap) store only IDs of strings (which are like array indexes), and save all strings in a separate datastructure that can be dumped and loaded in fairly
+large blocks. Implement optional mark and sweep on save (every xxx operations?) to remove deleted strings etc.  Just take a 40MB or so mem block and have the strings 
+   back to back with lengths prefixed, and an array with indexes into the block. Then have an array of blocks classes. This makes dumping a matter of dumping the ids and 
+   the text array (headers+ two writes per block)
+
+This makes the entities constant size, and is a first step to restoring/dumping the entity records themselves with a single read/write.
+
+For that some more problems need to be fixed.
+
+- fixing references between entities.
+- separate persistent and non persistent memory of records. E.g. cached versions of strings etc.
+
+Probably every persistent record gets some shadow record with metadata.
+
+The advantage is that the data is ready to use when loaded, without calls per object that scale bad (though every usage will trigger loading cache strings with data from stringheap etc)
+
+The system can then use its idle time to preload all caches.
+
+Some of it might run on RPI in low memory operations, keep the size of blocks not too large, and only have the n last requested blocks in memory.
+
+Mark sweep:
+-
+The mark sweep takes one pass on the data to mark the used strings. then the strings are renumbered (the blocks packed), and the IDs are translated.  
